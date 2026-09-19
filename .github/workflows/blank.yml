@@ -1,75 +1,176 @@
-      - name: Send Important Nuclei Results to Telegram
+name: arc.io Automated Subdomain & Nuclei Scan
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  security_scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Install Security Tools
+        run: |
+          echo "[*] Installing Nuclei..."
+          go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+
+          echo "[*] Installing Subfinder..."
+          go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+          echo "[+] Checking installations..."
+          nuclei -version
+          subfinder -version
+
+      - name: Update Nuclei Templates
+        run: |
+          nuclei -update-templates
+
+      - name: Enumerate Subdomains
+        id: subfinder
+        run: |
+          mkdir -p scan_results
+
+          echo "[*] Enumerating arc.io..."
+
+          subfinder \
+            -d arc.io \
+            -silent \
+            -o scan_results/arc.io_subdomains.txt
+
+          if [ ! -s scan_results/arc.io_subdomains.txt ]; then
+            echo "[-] No subdomains found."
+            exit 1
+          fi
+
+          SUB_COUNT=$(grep -cve '^[[:space:]]*$' scan_results/arc.io_subdomains.txt || true)
+
+          echo "SUB_COUNT=$SUB_COUNT" >> "$GITHUB_OUTPUT"
+
+          echo "[+] Found $SUB_COUNT subdomains."
+
+      - name: Run Nuclei
+        id: nuclei
+        run: |
+          echo "[*] Starting Nuclei scan..."
+
+          START_TIME=$(date +%s)
+
+          nuclei \
+            -l scan_results/arc.io_subdomains.txt \
+            -severity critical,high,medium \
+            -o scan_results/arc.io_nuclei_report.txt \
+            -silent
+
+          END_TIME=$(date +%s)
+
+          DURATION=$((END_TIME - START_TIME))
+
+          echo "DURATION=$DURATION" >> "$GITHUB_OUTPUT"
+
+          echo "[+] Nuclei scan completed."
+          echo "[+] Duration: ${DURATION}s"
+
+      - name: Analyze Results
+        id: results
+        if: always()
+        run: |
+          REPORT="scan_results/arc.io_nuclei_report.txt"
+
+          if [ ! -f "$REPORT" ]; then
+            touch "$REPORT"
+          fi
+
+          CRITICAL=$(grep -i '\[critical\]' "$REPORT" | wc -l | tr -d ' ')
+          HIGH=$(grep -i '\[high\]' "$REPORT" | wc -l | tr -d ' ')
+          MEDIUM=$(grep -i '\[medium\]' "$REPORT" | wc -l | tr -d ' ')
+
+          TOTAL=$((CRITICAL + HIGH + MEDIUM))
+
+          echo "CRITICAL=$CRITICAL" >> "$GITHUB_OUTPUT"
+          echo "HIGH=$HIGH" >> "$GITHUB_OUTPUT"
+          echo "MEDIUM=$MEDIUM" >> "$GITHUB_OUTPUT"
+          echo "TOTAL=$TOTAL" >> "$GITHUB_OUTPUT"
+
+          echo "[+] Critical: $CRITICAL"
+          echo "[+] High: $HIGH"
+          echo "[+] Medium: $MEDIUM"
+
+      - name: Send Important Results to Telegram
         if: always()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUB_COUNT: ${{ steps.subfinder.outputs.SUB_COUNT }}
+          CRITICAL: ${{ steps.results.outputs.CRITICAL }}
+          HIGH: ${{ steps.results.outputs.HIGH }}
+          MEDIUM: ${{ steps.results.outputs.MEDIUM }}
+          TOTAL: ${{ steps.results.outputs.TOTAL }}
+          DURATION: ${{ steps.nuclei.outputs.DURATION }}
         run: |
           REPORT="scan_results/arc.io_nuclei_report.txt"
-          SUBDOMAINS="scan_results/arc.io_subdomains.txt"
-
-          if [ -f "$SUBDOMAINS" ]; then
-            SUB_COUNT=$(grep -cve '^[[:space:]]*$' "$SUBDOMAINS" || true)
-          else
-            SUB_COUNT=0
-          fi
 
           if [ -f "$REPORT" ]; then
+            FINDINGS=$(grep -iE '\[(critical|high|medium)\]' "$REPORT" || true)
+          else
+            FINDINGS=""
+          fi
 
-            TOTAL=$(grep -cve '^[[:space:]]*$' "$REPORT" || true)
+          if [ -z "$FINDINGS" ]; then
 
-            CRITICAL=$(grep -i '\[critical\]' "$REPORT" | wc -l | tr -d ' ')
-            HIGH=$(grep -i '\[high\]' "$REPORT" | wc -l | tr -d ' ')
-            MEDIUM=$(grep -i '\[medium\]' "$REPORT" | wc -l | tr -d ' ')
+            MESSAGE="✅ arc.io Scan
 
-            IMPORTANT=$(grep -iE '\[(critical|high|medium)\]' "$REPORT" || true)
+          🔎 Subdomains: ${SUB_COUNT:-0}
+          🔴 Critical: ${CRITICAL:-0}
+          🟠 High: ${HIGH:-0}
+          🟡 Medium: ${MEDIUM:-0}
+          ⏱️ Duration: ${DURATION:-N/A}s
 
-            if [ -z "$IMPORTANT" ]; then
+          No important findings detected."
 
-              MESSAGE="✅ arc.io Scan Completed
+          else
 
-          🔎 Subdomains: $SUB_COUNT
-          🚨 Important findings: 0
-          📊 Critical: $CRITICAL | High: $HIGH | Medium: $MEDIUM
-          ℹ️ Total findings: $TOTAL
+            MESSAGE="🚨 arc.io Important Findings
 
-          No medium/high/critical findings detected."
-
-            else
-
-              MESSAGE="🚨 arc.io Important Findings
-
-          🔎 Subdomains: $SUB_COUNT
-
-          🔴 Critical: $CRITICAL
-          🟠 High: $HIGH
-          🟡 Medium: $MEDIUM
+          🔎 Subdomains: ${SUB_COUNT:-0}
+          🔴 Critical: ${CRITICAL:-0}
+          🟠 High: ${HIGH:-0}
+          🟡 Medium: ${MEDIUM:-0}
+          ⏱️ Duration: ${DURATION:-N/A}s
 
           🔗 Findings:
 
-          $IMPORTANT"
-
-            fi
-
-          else
-
-            MESSAGE="❌ arc.io Scan Failed
-
-          Nuclei report was not generated.
-
-          🔎 Subdomains found: $SUB_COUNT"
+          ${FINDINGS}"
 
           fi
 
-          # Telegram limit protection
           echo "$MESSAGE" | split -C 3500 - /tmp/telegram_part_
 
           for PART in /tmp/telegram_part_*; do
-
             curl -sS -X POST \
               "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
               -d "chat_id=${TELEGRAM_CHAT_ID}" \
               --data-urlencode "text=$(cat "$PART")"
-
-            echo ""
-
           done
+
+      - name: Upload Scan Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arc-io-scan-reports
+          path: scan_results/
