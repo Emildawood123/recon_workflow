@@ -26,51 +26,172 @@ jobs:
       - name: Run Recon and Nuclei Scan Script
         run: |
           python -c '
-          import subprocess, sys, shutil, os
+          import subprocess
+          import sys
+          import shutil
+          import os
 
           def run_cmd(command):
               print(f"[*] Running command: {command}")
-              process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=True)
+              process = subprocess.run(
+                  command,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  text=True,
+                  shell=True
+              )
+
+              if process.stdout:
+                  print(process.stdout)
+
+              if process.stderr:
+                  print(process.stderr)
+
               return process.returncode, process.stdout, process.stderr
 
           def is_installed(name):
               return shutil.which(name) is not None
 
           go_bin = os.path.expanduser("~/go/bin")
+
           if go_bin not in os.environ["PATH"]:
               os.environ["PATH"] += os.pathsep + go_bin
 
+          # Install Nuclei if not installed
           if not is_installed("nuclei"):
-              run_cmd("go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest")
-          
+              print("[*] Installing Nuclei...")
+              code, _, _ = run_cmd(
+                  "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
+              )
+
+              if code != 0:
+                  print("[-] Failed to install Nuclei.")
+                  sys.exit(1)
+
+          # Update Nuclei templates
+          print("[*] Updating Nuclei templates...")
           run_cmd("nuclei -update-templates")
 
+          # Install Subfinder if not installed
           if not is_installed("subfinder"):
-              run_cmd("go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest")
+              print("[*] Installing Subfinder...")
+              code, _, _ = run_cmd(
+                  "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+              )
+
+              if code != 0:
+                  print("[-] Failed to install Subfinder.")
+                  sys.exit(1)
 
           output_dir = "scan_results"
           os.makedirs(output_dir, exist_ok=True)
 
-          # تم التعديل هنا ليعمل على example
           target_domain = "arc.io"
-          subdomains_file = os.path.join(output_dir, f"{target_domain}_subdomains.txt")
-          output_report = os.path.join(output_dir, f"{target_domain}_nuclei_report.txt")
 
-          print(f"--- Step 2: Enumerating subdomains for target: {target_domain} ---")
-          run_cmd(f"subfinder -d {target_domain} -o {subdomains_file} -silent")
+          subdomains_file = os.path.join(
+              output_dir,
+              f"{target_domain}_subdomains.txt"
+          )
 
-          if not os.path.exists(subdomains_file) or os.path.getsize(subdomains_file) == 0:
+          output_report = os.path.join(
+              output_dir,
+              f"{target_domain}_nuclei_report.txt"
+          )
+
+          print(
+              f"--- Step 2: Enumerating subdomains for target: "
+              f"{target_domain} ---"
+          )
+
+          code, stdout, stderr = run_cmd(
+              f"subfinder -d {target_domain} "
+              f"-o {subdomains_file} -silent"
+          )
+
+          if code != 0:
+              print("[-] Subfinder failed.")
+              sys.exit(1)
+
+          if (
+              not os.path.exists(subdomains_file)
+              or os.path.getsize(subdomains_file) == 0
+          ):
               print("[-] No subdomains found.")
               sys.exit(1)
 
           with open(subdomains_file, "r") as f:
-              sub_count = len(f.readlines())
+              sub_count = len(
+                  [line for line in f if line.strip()]
+              )
+
           print(f"[+] Found {sub_count} subdomains.")
 
-          print(f"--- Step 3: Running Nuclei scan ---")
-          run_cmd(f"nuclei -l {subdomains_file} -o {output_report}")
+          print("--- Step 3: Running Nuclei scan ---")
+
+          code, stdout, stderr = run_cmd(
+              f"nuclei -l {subdomains_file} "
+              f"-o {output_report}"
+          )
+
+          if code != 0:
+              print("[-] Nuclei scan failed.")
+              sys.exit(1)
+
+          if not os.path.exists(output_report):
+              print("[-] Nuclei report was not generated.")
+              sys.exit(1)
+
           print("[+] Scan completed successfully!")
+          print(f"[+] Report: {output_report}")
           '
+
+      - name: Send Nuclei Results to Telegram
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          REPORT="scan_results/arc.io_nuclei_report.txt"
+
+          if [ -f "$REPORT" ]; then
+
+            RESULTS=$(cat "$REPORT")
+
+            if [ -z "$RESULTS" ]; then
+              MESSAGE="✅ arc.io scan completed.
+
+          🔍 Subdomains were enumerated successfully.
+          🛡️ Nuclei completed successfully.
+          📊 No Nuclei findings were detected."
+
+            else
+              MESSAGE="🚨 arc.io Nuclei Scan Results
+
+          $RESULTS"
+            fi
+
+          else
+
+            MESSAGE="❌ arc.io scan failed.
+
+          The Nuclei report was not generated."
+
+          fi
+
+          # Telegram message limit is approximately 4096 characters.
+          # Split large reports into smaller messages.
+          echo "$MESSAGE" | split -C 3500 - /tmp/telegram_part_
+
+          for PART in /tmp/telegram_part_*; do
+
+            curl -s -X POST \
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=$(cat "$PART")"
+
+            echo ""
+
+          done
 
       - name: Upload Scan Artifacts
         uses: actions/upload-artifact@v4
