@@ -1,4 +1,4 @@
-name: arc.io Automated Subdomain & Nuclei Scan
+name: whatnot.com Automated Subdomain & Nuclei Scan
 
 on:
   schedule:
@@ -46,19 +46,19 @@ jobs:
         run: |
           mkdir -p scan_results
 
-          echo "[*] Enumerating arc.io..."
+          echo "[*] Enumerating whatnot.com..."
 
           subfinder \
-            -d arc.io \
+            -d whatnot.com \
             -silent \
-            -o scan_results/arc.io_subdomains.txt
+            -o scan_results/whatnot.com_subdomains.txt
 
-          if [ ! -s scan_results/arc.io_subdomains.txt ]; then
+          if [ ! -s scan_results/whatnot.com_subdomains.txt ]; then
             echo "[-] No subdomains found."
             exit 1
           fi
 
-          SUB_COUNT=$(grep -cve '^[[:space:]]*$' scan_results/arc.io_subdomains.txt || true)
+          SUB_COUNT=$(grep -cve '^[[:space:]]*$' scan_results/whatnot.com_subdomains.txt || true)
 
           echo "SUB_COUNT=$SUB_COUNT" >> "$GITHUB_OUTPUT"
 
@@ -72,9 +72,9 @@ jobs:
           START_TIME=$(date +%s)
 
           nuclei \
-            -l scan_results/arc.io_subdomains.txt \
+            -l scan_results/whatnot.com_subdomains.txt \
             -severity critical,high,medium \
-            -o scan_results/arc.io_nuclei_report.txt \
+            -o scan_results/whatnot.com_nuclei_report.txt \
             -silent
 
           END_TIME=$(date +%s)
@@ -90,7 +90,7 @@ jobs:
         id: results
         if: always()
         run: |
-          REPORT="scan_results/arc.io_nuclei_report.txt"
+          REPORT="scan_results/whatnot.com_nuclei_report.txt"
 
           if [ ! -f "$REPORT" ]; then
             touch "$REPORT"
@@ -123,7 +123,7 @@ jobs:
           TOTAL: ${{ steps.results.outputs.TOTAL }}
           DURATION: ${{ steps.nuclei.outputs.DURATION }}
         run: |
-          REPORT="scan_results/arc.io_nuclei_report.txt"
+          REPORT="scan_results/whatnot.com_nuclei_report.txt"
 
           if [ -f "$REPORT" ]; then
             FINDINGS=$(grep -iE '\[(critical|high|medium)\]' "$REPORT" || true)
@@ -133,7 +133,7 @@ jobs:
 
           if [ -z "$FINDINGS" ]; then
 
-            MESSAGE="✅ arc.io Scan
+            MESSAGE="✅ whatnot.com Scan
 
           🔎 Subdomains: ${SUB_COUNT:-0}
           🔴 Critical: ${CRITICAL:-0}
@@ -145,7 +145,7 @@ jobs:
 
           else
 
-            MESSAGE="🚨 arc.io Important Findings
+            MESSAGE="🚨 whatnot.com Important Findings
 
           🔎 Subdomains: ${SUB_COUNT:-0}
           🔴 Critical: ${CRITICAL:-0}
